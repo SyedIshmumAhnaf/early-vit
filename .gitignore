@@ -1,0 +1,34 @@
+# Python/cache
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Envs & IDE
+.env
+.venv/
+venv/
+.envrc
+.vscode/
+.idea/
+.DS_Store
+
+# Artifacts & data
+data/
+datasets/
+outputs/
+runs/
+logs/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+
+# Build/packaging
+build/
+dist/
+*.egg-info/
+
+# Colab/temp
+*.tmp
