@@ -15,7 +15,8 @@ venv/
 .DS_Store
 
 # Artifacts & data
-data/
+#data/
+DADA-2000-small/
 datasets/
 outputs/
 runs/

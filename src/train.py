@@ -1,8 +1,8 @@
-import argparse, torch
+import argparse, torch, os
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from src.utils.seed import set_seed
-from src.data.dummy_video import make_loader
+from src.data.dummy_video import make_loader as make_dummy
 from src.models.backbone import build_backbone
 from src.models.head import BCEHead
 from src.losses.earliness import bce_with_earliness
@@ -10,26 +10,51 @@ from src.metrics.classification import ap_auc
 
 def get_args():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--dataset", type=str, default="dummy", choices=["dummy","dada"])
+    ap.add_argument("--dada_root", type=str, default="")  # set when dataset=dada
+    ap.add_argument("--split", type=str, default="training", choices=["training","validation","testing"])
+
     ap.add_argument("--backbone", type=str, default="tiny3d", choices=["tiny3d","mvitv2_s"])
     ap.add_argument("--frames", type=int, default=16)
     ap.add_argument("--size", type=int, default=112)
-    ap.add_argument("--train_n", type=int, default=64)
-    ap.add_argument("--val_n", type=int, default=32)
+
+    ap.add_argument("--train_n", type=int, default=64)  # only used by dummy
+    ap.add_argument("--val_n", type=int, default=32)    # only used by dummy
     ap.add_argument("--batch", type=int, default=4)
     ap.add_argument("--epochs", type=int, default=2)
     ap.add_argument("--lr", type=float, default=2e-4)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--max_items", type=int, default=0)  # 0=all; useful for quick sanity on DADA
     return ap.parse_args()
+
+def build_loaders(args):
+    if args.dataset == "dummy":
+        train_loader = make_dummy(batch_size=args.batch, n_samples=args.train_n,
+                                  frames=args.frames, size=(args.size,args.size))
+        val_loader = make_dummy(batch_size=args.batch, n_samples=args.val_n,
+                                frames=args.frames, size=(args.size,args.size), shuffle=False)
+        return train_loader, val_loader
+
+    # DADA path
+    from src.data.dada import make_dada_loader
+    if not args.dada_root or not os.path.isdir(args.dada_root):
+        raise SystemExit("Please provide --dada_root pointing to DADA-2000-small directory.")
+
+    max_items = None if args.max_items <= 0 else args.max_items
+    train_loader = make_dada_loader(root_dir=args.dada_root, split="training",
+                                    batch=args.batch, frames=args.frames, size=(args.size,args.size),
+                                    shuffle=True, max_items=max_items)
+    val_loader   = make_dada_loader(root_dir=args.dada_root, split="validation",
+                                    batch=args.batch, frames=args.frames, size=(args.size,args.size),
+                                    shuffle=False, max_items=max_items)
+    return train_loader, val_loader
 
 def main():
     args = get_args()
     set_seed(args.seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    train_loader = make_loader(batch_size=args.batch, n_samples=args.train_n,
-                               frames=args.frames, size=(args.size,args.size))
-    val_loader   = make_loader(batch_size=args.batch, n_samples=args.val_n,
-                               frames=args.frames, size=(args.size,args.size), shuffle=False)
+    train_loader, val_loader = build_loaders(args)
 
     # Model
     D = 256
