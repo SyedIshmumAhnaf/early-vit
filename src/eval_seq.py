@@ -10,6 +10,7 @@ from src.metrics.classification import ap_auc
 from src.metrics.mtta import mean_relative_mtta, frames_to_seconds
 from src.data.dada import list_dada_samples
 from src.utils.seed import set_seed
+from src.data.dada import list_dada_samples_with_keys, key_to_coord_path, first_event_frame_from_coord
 
 def sliding_windows_T(frames_tchw, T, pad_mode="edge"):
     """
@@ -96,7 +97,7 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # List samples
-    samples = list_dada_samples(args.dada_root, args.split, max_items=args.max_items)
+    samples = list_dada_samples_with_keys(args.dada_root, args.split, max_items=args.max_items)
     print(f"Found {len(samples)} videos for split={args.split}")
 
     # Build model
@@ -110,30 +111,44 @@ def main():
     pos_seqs = []    # probability sequences for positives (for mTTA)
     fps_assumed = 30.0  # used for seconds conversion if needed
 
-    for path, label in tqdm(samples, desc="Evaluating"):
-        # Read full video and slide windows
+    for key, path, label in tqdm(samples, desc="Evaluating"):
         frames_tchw = read_video_TCHW(path, args.size, args.size)  # (T,C,H,W)
         wins = sliding_windows_T(frames_tchw, args.frames)
 
-        # Batched forward
-        # Construct (B,C,T,H,W) batch by stacking wins
-        probs = batched_forward(model, wins, device, batch_size=args.batch_windows)  # (T,) approx
-        # Per-video score for AP/AUC: we can use max over time (or mean); max is common for “did accident occur?”
-        vid_score = float(np.max(probs)) if len(probs) else 0.0
-        all_labels.append(int(label))
-        all_scores.append(vid_score)
+        probs = batched_forward(model, wins, device, batch_size=args.batch_windows)  # (T,)
+        #vid_score = float(np.max(probs)) if len(probs) else 0.0
+        k = max(1, len(probs)//10)  # top 10% frames
+        vid_score = float(np.mean(np.sort(probs)[-k:]))
+        all_labels.append(int(label)); all_scores.append(vid_score)
 
         if int(label) == 1:
-            pos_seqs.append(probs)
+            # absolute mTTA: distance from first alarm to first non-zero coord frame
+            coord_path = key_to_coord_path(args.dada_root, args.split, key)
+            event_idx = first_event_frame_from_coord(coord_path)  # 0-based; -1 if not found
+            if event_idx >= 0:
+                # first crossing of threshold
+                idx = np.where(probs >= args.threshold)[0]
+                if len(idx) and idx[0] <= event_idx:
+                    abs_early = int(event_idx - idx[0])  # frames before event
+                else:
+                    abs_early = 0  # alarm after event or never crosses
+                pos_seqs.append(("ok", abs_early))
+            else:
+                pos_seqs.append(("no_event", 0))
+
 
     # Classification metrics
     ap_score, auc_score = ap_auc(all_scores, all_labels)
     print(f"Video-level Val AP: {ap_score:.3f}  AUC: {auc_score:.3f}")
 
-    # Relative mTTA (positives only) in frames and seconds
-    rel_mtta_frames = mean_relative_mtta(pos_seqs, thresh=args.threshold)
-    rel_mtta_secs = frames_to_seconds(rel_mtta_frames, fps=fps_assumed)
-    print(f"Mean Relative mTTA: {rel_mtta_frames:.2f} frames  (~{rel_mtta_secs:.2f} s) at threshold={args.threshold}")
+    # absolute mTTA over positives with valid event frames
+    abs_frames = [v for tag, v in pos_seqs if tag == "ok"]
+    if abs_frames:
+        abs_mtta_frames = float(np.mean(abs_frames))
+        abs_mtta_secs = frames_to_seconds(abs_mtta_frames, fps=30.0)
+        print(f"Absolute mTTA (to coord event): {abs_mtta_frames:.2f} frames  (~{abs_mtta_secs:.2f} s) at threshold={args.threshold}")
+    else:
+        print("Absolute mTTA: no valid coord events found; check coordinate files.")
 
 if __name__ == "__main__":
     main()

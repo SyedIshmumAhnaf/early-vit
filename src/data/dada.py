@@ -5,6 +5,7 @@ from torch.utils.data import Dataset, DataLoader
 import torchvision
 import torchvision.transforms.functional as TF
 import random
+import re
 
 # --------- helpers ---------
 def _resolve_video_path(root_rgb: str, key: str) -> Optional[str]:
@@ -164,5 +165,47 @@ def list_dada_samples(root_dir: str, split: str, max_items: Optional[int] = None
         if p is not None:
             samples.append((p, label))
     if max_items is not None and max_items > 0:
+        samples = samples[:max_items]
+    return samples
+
+def key_to_coord_path(root_dir: str, split: str, key: str) -> str:
+    # key '1/022' -> '<root>/<split>/coordinate/1/022_coordinate.txt'
+    scene, clip = key.split("/")
+    return os.path.join(root_dir, split, "coordinate", scene, f"{clip}_coordinate.txt")
+
+def first_event_frame_from_coord(coord_path: str) -> int:
+    """
+    Returns 0-based frame index of first non-zero fixation (x,y), or -1 if none.
+    """
+    if not os.path.isfile(coord_path):
+        return -1
+    with open(coord_path, "r", encoding="utf-8") as f:
+        for i, ln in enumerate(f):
+            ln = ln.strip()
+            if not ln: 
+                continue
+            # expect "x,y"
+            try:
+                x_str, y_str = ln.split(",")
+                x = int(x_str); y = int(y_str)
+                if x != 0 or y != 0:
+                    return i
+            except Exception:
+                continue
+    return -1
+
+def list_dada_samples_with_keys(root_dir: str, split: str, max_items: int | None = None):
+    """
+    Returns list of (key, video_path, label).
+    """
+    rgb_root = os.path.join(root_dir, split, "rgb_videos")
+    split_txt = os.path.join(root_dir, split, f"{split}.txt")
+    items = _read_split_list(split_txt)
+    samples = []
+    for key, label in items:
+        p = _resolve_video_path(rgb_root, key)
+        if p is not None:
+            samples.append((key, p, label))
+    if max_items:
         samples = samples[:max_items]
     return samples
