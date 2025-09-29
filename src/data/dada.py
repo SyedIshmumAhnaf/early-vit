@@ -150,3 +150,19 @@ def make_dada_loader(root_dir: str, split: str, batch: int = 4, frames: int = 16
                      size: Tuple[int,int]=(112,112), shuffle=True, max_items: Optional[int]=None):
     ds = DADAClips(root_dir=root_dir, split=split, frames=frames, size=size, max_items=max_items)
     return DataLoader(ds, batch_size=batch, shuffle=shuffle, num_workers=2, pin_memory=True, drop_last=False)
+
+def list_dada_samples(root_dir: str, split: str, max_items: Optional[int] = None):
+    """
+    Returns list of (video_path, label) for the split, resolved via rgb_videos.
+    """
+    rgb_root = os.path.join(root_dir, split, "rgb_videos")
+    split_txt = os.path.join(root_dir, split, f"{split}.txt")
+    items = _read_split_list(split_txt)
+    samples = []
+    for key, label in items:
+        p = _resolve_video_path(rgb_root, key)
+        if p is not None:
+            samples.append((p, label))
+    if max_items is not None and max_items > 0:
+        samples = samples[:max_items]
+    return samples

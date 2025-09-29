@@ -1,4 +1,5 @@
 import argparse, torch, os
+from xml.parsers.expat import model
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from src.utils.seed import set_seed
@@ -88,6 +89,13 @@ def main():
                 labels.extend(yb.numpy().tolist())
         ap, auc = ap_auc(preds, labels)
         print(f"Val AP: {ap:.3f}  AUC: {auc:.3f}")
+
+        # ... after print(f"Val AP: {ap:.3f}  AUC: {auc:.3f}")
+        ckpt_dir = "checkpoints"
+        os.makedirs(ckpt_dir, exist_ok=True)
+        torch.save(model.state_dict(), os.path.join(ckpt_dir, "last.pt"))
+        print(f"Saved checkpoint to {os.path.join(ckpt_dir, 'last.pt')}")
+
 
 if __name__ == "__main__":
     main()
