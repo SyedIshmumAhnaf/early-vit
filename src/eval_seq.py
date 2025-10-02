@@ -53,6 +53,9 @@ def read_video_TCHW(path, H, W):
         mode="trilinear",
         align_corners=False
     ).squeeze(0).permute(1,0,2,3).contiguous()  # (T,C,H,W)
+    mean = torch.tensor([0.485, 0.456, 0.406]).view(1,3,1,1)  # broadcast over T
+    std  = torch.tensor([0.229, 0.224, 0.225]).view(1,3,1,1)
+    frames = (frames - mean) / std
     return frames
 
 def batched_forward(model, windows, device, batch_size=16):

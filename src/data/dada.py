@@ -143,8 +143,28 @@ class DADAClips(Dataset):
             imgs = [self._resize_crop(sel[t]) for t in range(sel.shape[0])]  # list of (C,H,W)
             clip = torch.stack(imgs, dim=1)  # (C,T,H,W)
 
+        if self.split == "training":
+            # Random spatial crop (keep 88–100% of area), then resize back
+            scale = random.uniform(0.88, 1.0)
+            newH, newW = int(self.H*scale), int(self.W*scale)
+            clip = torch.nn.functional.interpolate(
+                clip.unsqueeze(0), size=(self.frames, newH, newW),
+                mode="trilinear", align_corners=False
+            ).squeeze(0)
+            # center-crop back to (H,W)
+            top = max(0, (newH - self.H)//2); left = max(0, (newW - self.W)//2)
+            clip = clip[:, :, top:top+self.H, left:left+self.W]
+
+            # Light brightness/contrast jitter (±10%), *consistent across frames*
+            b = 1.0 + random.uniform(-0.1, 0.1)
+            c = 1.0 + random.uniform(-0.1, 0.1)
+            clip = torch.clamp((clip * c + (b - 1.0)), -3.0, 3.0)  # clamp pre-normalization range a bit
+
         y = torch.tensor(label, dtype=torch.float32)
         tte = torch.tensor(self.frames, dtype=torch.int64)  # provisional; refine later with true accident frame
+        mean = torch.tensor([0.485, 0.456, 0.406]).view(3,1,1,1)
+        std  = torch.tensor([0.229, 0.224, 0.225]).view(3,1,1,1)
+        clip = (clip - mean) / std
         return clip, y, tte
 
 def make_dada_loader(root_dir: str, split: str, batch: int = 4, frames: int = 16,

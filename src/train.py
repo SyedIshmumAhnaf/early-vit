@@ -1,5 +1,4 @@
 import argparse, torch, os
-from xml.parsers.expat import model
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from src.utils.seed import set_seed
@@ -9,6 +8,7 @@ from src.models.head import BCEHead
 from src.losses.earliness import bce_with_earliness
 from src.metrics.classification import ap_auc
 from torch.cuda.amp import autocast, GradScaler
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
 def get_args():
     ap = argparse.ArgumentParser()
@@ -64,6 +64,7 @@ def main():
     head = BCEHead(D)
     model = torch.nn.Sequential(bb, head).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
+    scheduler = CosineAnnealingLR(opt, T_max=args.epochs)
 
     scaler = GradScaler(enabled=(device=="cuda"))
     best_ap = -1.0
@@ -96,6 +97,7 @@ def main():
                 labels.extend(yb.numpy().tolist())
         ap, auc = ap_auc(preds, labels)
         print(f"Val AP: {ap:.3f}  AUC: {auc:.3f}")
+        scheduler.step()
 
         # ... after print(f"Val AP: {ap:.3f}  AUC: {auc:.3f}")
         os.makedirs("checkpoints", exist_ok=True)
