@@ -144,21 +144,24 @@ class DADAClips(Dataset):
             clip = torch.stack(imgs, dim=1)  # (C,T,H,W)
 
         if self.split == "training":
-            # Random spatial crop (keep 88–100% of area), then resize back
+            # Random resized crop (keep 88–100% area), applied CONSISTENTLY to all frames
             scale = random.uniform(0.88, 1.0)
-            newH, newW = int(self.H*scale), int(self.W*scale)
+            crop_h = max(8, int(self.H * scale))
+            crop_w = max(8, int(self.W * scale))
+            # clip is currently (C,T,H,W) and already HxW; choose a valid crop window
+            top  = 0 if crop_h == self.H else random.randint(0, self.H - crop_h)
+            left = 0 if crop_w == self.W else random.randint(0, self.W - crop_w)
+            clip = clip[:, :, top:top + crop_h, left:left + crop_w]  # (C,T,crop_h,crop_w)
+            # Resize back to (H,W) while keeping T unchanged
             clip = torch.nn.functional.interpolate(
-                clip.unsqueeze(0), size=(self.frames, newH, newW),
+                clip.unsqueeze(0), size=(self.frames, self.H, self.W),
                 mode="trilinear", align_corners=False
-            ).squeeze(0)
-            # center-crop back to (H,W)
-            top = max(0, (newH - self.H)//2); left = max(0, (newW - self.W)//2)
-            clip = clip[:, :, top:top+self.H, left:left+self.W]
+            ).squeeze(0)  # (C,T,H,W)
 
-            # Light brightness/contrast jitter (±10%), *consistent across frames*
+            # Light brightness/contrast jitter (±10%), consistent across frames
             b = 1.0 + random.uniform(-0.1, 0.1)
             c = 1.0 + random.uniform(-0.1, 0.1)
-            clip = torch.clamp((clip * c + (b - 1.0)), -3.0, 3.0)  # clamp pre-normalization range a bit
+            clip = torch.clamp((clip * c + (b - 1.0)), -3.0, 3.0)
 
         y = torch.tensor(label, dtype=torch.float32)
         tte = torch.tensor(self.frames, dtype=torch.int64)  # provisional; refine later with true accident frame

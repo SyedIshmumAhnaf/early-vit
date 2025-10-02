@@ -7,7 +7,7 @@ from src.models.backbone import build_backbone
 from src.models.head import BCEHead
 from src.losses.earliness import bce_with_earliness
 from src.metrics.classification import ap_auc
-from torch.cuda.amp import autocast, GradScaler
+from torch import amp
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 def get_args():
@@ -66,7 +66,7 @@ def main():
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
     scheduler = CosineAnnealingLR(opt, T_max=args.epochs)
 
-    scaler = GradScaler(enabled=(device=="cuda"))
+    scaler = amp.GradScaler("cuda", enabled=(device=="cuda"))
     best_ap = -1.0
     
     for epoch in range(1, args.epochs+1):
@@ -75,7 +75,7 @@ def main():
         for xb, yb, tb in tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}"):
             xb, yb, tb = xb.to(device), yb.to(device), tb.to(device)
             opt.zero_grad(set_to_none=True)
-            with autocast(enabled=(device=="cuda")):
+            with amp.autocast("cuda", enabled=(device=="cuda")):
                 logits = model(xb)
                 loss, w = bce_with_earliness(logits, yb, tb, T=args.frames, pos_weight=1.5)
             scaler.scale(loss).backward()
@@ -90,7 +90,7 @@ def main():
         with torch.no_grad():
             for xb, yb, tb in val_loader:
                 xb = xb.to(device)
-                with autocast(enabled=(device=="cuda")):
+                with amp.autocast("cuda", enabled=(device=="cuda")):
                     logits = model(xb)
                 probs = torch.sigmoid(logits).cpu().numpy()
                 preds.extend(probs.tolist())
