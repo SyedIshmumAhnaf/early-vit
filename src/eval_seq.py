@@ -3,11 +3,12 @@ import numpy as np
 import torch
 import torchvision
 from tqdm import tqdm
+import csv
 
 from src.models.backbone import build_backbone
 from src.models.head import BCEHead
 from src.metrics.classification import ap_auc
-from src.metrics.mtta import mean_relative_mtta, frames_to_seconds
+from src.metrics.mtta import frames_to_seconds
 from src.data.dada import list_dada_samples
 from src.utils.seed import set_seed
 from src.data.dada import list_dada_samples_with_keys, key_to_coord_path, first_event_frame_from_coord
@@ -94,6 +95,11 @@ def main():
     ap.add_argument("--batch_windows", type=int, default=16)
     ap.add_argument("--threshold", type=float, default=0.5)
     ap.add_argument("--seed", type=int, default=42)
+
+    ap.add_argument("--thresholds", type=str, default="0.5")
+    ap.add_argument("--score_pool", type=str, default="topkmean", choices=["topkmean","max"])
+    ap.add_argument("--k_frac", type=float, default=0.1)
+    ap.add_argument("--dump_csv", type=str, default="eval_summary.csv")
     args = ap.parse_args()
 
     set_seed(args.seed)
@@ -111,47 +117,72 @@ def main():
     # Evaluate
     all_labels = []
     all_scores = []  # per-video score (max prob over time)
-    pos_seqs = []    # probability sequences for positives (for mTTA)
-    fps_assumed = 30.0  # used for seconds conversion if needed
+    ths = [float(t.strip()) for t in args.thresholds.split(",") if t.strip()]
+    rows = []
 
     for key, path, label in tqdm(samples, desc="Evaluating"):
-        frames_tchw = read_video_TCHW(path, args.size, args.size)  # (T,C,H,W)
+        frames_tchw = read_video_TCHW(path, args.size, args.size)
         wins = sliding_windows_T(frames_tchw, args.frames)
+        probs = batched_forward(model, wins, device, batch_size=args.batch_windows)
 
-        probs = batched_forward(model, wins, device, batch_size=args.batch_windows)  # (T,)
         #vid_score = float(np.max(probs)) if len(probs) else 0.0
-        k = max(1, len(probs)//10)  # top 10% frames
-        vid_score = float(np.mean(np.sort(probs)[-k:]))
-        all_labels.append(int(label)); all_scores.append(vid_score)
+        if args.score_pool == "max":
+            vid_score = float(np.max(probs)) if len(probs) else 0.0
+        else:
+            if len(probs):
+                k = max(1, int(len(probs) * args.k_frac))
+                vid_score = float(np.mean(np.sort(probs)[-k:]))
+            else:
+                vid_score = 0.0
+        
+        all_labels.append(int(label))
+        all_scores.append(vid_score)
+        event_idx = -1
 
         if int(label) == 1:
             # absolute mTTA: distance from first alarm to first non-zero coord frame
             coord_path = key_to_coord_path(args.dada_root, args.split, key)
             event_idx = first_event_frame_from_coord(coord_path)  # 0-based; -1 if not found
-            if event_idx >= 0:
-                # first crossing of threshold
-                idx = np.where(probs >= args.threshold)[0]
-                if len(idx) and idx[0] <= event_idx:
-                    abs_early = int(event_idx - idx[0])  # frames before event
-                else:
-                    abs_early = 0  # alarm after event or never crosses
-                pos_seqs.append(("ok", abs_early))
-            else:
-                pos_seqs.append(("no_event", 0))
+        
+        per_th = {}
+        for th in ths:
+            idx_cross = np.where(probs >= th)[0]
+            first_cross = int(idx_cross[0]) if len(idx_cross) else -1
+            abs_mtta = 0
+            if int(label) == 1 and event_idx >= 0 and first_cross >= 0 and first_cross <= event_idx:
+                abs_mtta = int(event_idx - first_cross)
+            per_th[th] = (first_cross, abs_mtta)
 
+        row = {
+            "key": key, "label": int(label), "vid_score": vid_score, "event_idx": event_idx,
+        }
+
+        for th in ths:
+            fc, mtta = per_th[th]
+            row[f"first_cross@{th}"] = fc
+            row[f"mtta_frames@{th}"] = mtta
+        rows.append(row)
 
     # Classification metrics
     ap_score, auc_score = ap_auc(all_scores, all_labels)
     print(f"Video-level Val AP: {ap_score:.3f}  AUC: {auc_score:.3f}")
 
-    # absolute mTTA over positives with valid event frames
-    abs_frames = [v for tag, v in pos_seqs if tag == "ok"]
-    if abs_frames:
-        abs_mtta_frames = float(np.mean(abs_frames))
-        abs_mtta_secs = frames_to_seconds(abs_mtta_frames, fps=30.0)
-        print(f"Absolute mTTA (to coord event): {abs_mtta_frames:.2f} frames  (~{abs_mtta_secs:.2f} s) at threshold={args.threshold}")
-    else:
-        print("Absolute mTTA: no valid coord events found; check coordinate files.")
+    for th in ths:
+        mttas = [r[f"mtta_frames@{th}"] for r in rows if r["label"]==1 and r["event_idx"]>=0]
+        if mttas:
+            mean_mtta = float(np.mean(mttas))
+            print(f"[th={th}] Mean Absolute mTTA: {mean_mtta:.2f} frames (~{frames_to_seconds(mean_mtta):.2f} s)")
+        positives = [r for r in rows if r["label"]==1 and r["event_idx"]>=0]
+        pre_event_triggers = sum(1 for r in positives if r[f"first_cross@{th}"] >= 0 and r[f"first_cross@{th}"] <= r["event_idx"])
+        print(f"[th={th}] Positives that triggered before event: {pre_event_triggers}/{len(positives) if positives else 0}")
+
+    # Dump CSV
+    fieldnames = list(rows[0].keys()) if rows else []
+    with open(args.dump_csv, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        w.writerows(rows)
+    print(f"Wrote per-video summary to {args.dump_csv}")
 
 if __name__ == "__main__":
     main()
