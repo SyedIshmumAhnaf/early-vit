@@ -3,9 +3,7 @@ from typing import Tuple, List, Optional
 import torch
 from torch.utils.data import Dataset, DataLoader
 import torchvision
-import torchvision.transforms.functional as TF
 import random
-import re
 
 # --------- helpers ---------
 def _resolve_video_path(root_rgb: str, key: str) -> Optional[str]:
@@ -67,6 +65,35 @@ def _temporal_sample_indices(num_frames: int, T: int) -> List[int]:
             i += 1
         return out
 
+def first_nonzero_coord(coord_path: str):
+    """Return (frame_idx, x, y) of first non-zero fixation, or (-1, -1, -1) if none."""
+    if not os.path.isfile(coord_path):
+        return -1, -1, -1
+    with open(coord_path, "r", encoding="utf-8") as f:
+        for i, ln in enumerate(f):
+            ln = ln.strip()
+            if not ln:
+                continue
+            try:
+                xs, ys = ln.split(",")
+                x, y = int(xs), int(ys)
+                if x != 0 or y != 0:
+                    return i, x, y
+            except Exception:
+                continue
+    return -1, -1, -1
+
+def gaussian_heatmap(h, w, cx, cy, sigma=2.0):
+    """
+    Create a (1,h,w) float map with a Gaussian at (cx, cy) in *heatmap* coordinates.
+    (cx, cy) are floats in [0,w) x [0,h).
+    """
+    yy, xx = torch.meshgrid(torch.arange(h), torch.arange(w), indexing="ij")
+    yy = yy.float(); xx = xx.float()
+    g = torch.exp(-((xx - cx)**2 + (yy - cy)**2) / (2.0 * sigma * sigma))
+    g = g / (g.sum() + 1e-8)
+    return g.unsqueeze(0)  # (1,h,w)
+
 # --------- dataset ---------
 class DADAClips(Dataset):
     """
@@ -77,6 +104,9 @@ class DADAClips(Dataset):
                  root_dir: str,          # e.g., '/content/DADA-2000-small'
                  split: str = "training",# 'training'|'validation'|'testing'
                  frames: int = 16,
+                 use_fixation=False,
+                 fix_size=14,
+                 sigma=2.0,
                  size: Tuple[int,int] = (112,112),
                  max_items: Optional[int] = None):
         super().__init__()
@@ -84,6 +114,9 @@ class DADAClips(Dataset):
         self.split = split
         self.frames = frames
         self.H, self.W = size
+        self.use_fixation = use_fixation
+        self.fix_size = fix_size
+        self.fix_sigma = sigma
         self.rgb_root = os.path.join(self.root, split, "rgb_videos")
         split_txt = os.path.join(self.root, split, f"{split}.txt")
         items = _read_split_list(split_txt)
@@ -168,12 +201,41 @@ class DADAClips(Dataset):
         mean = torch.tensor([0.485, 0.456, 0.406]).view(3,1,1,1)
         std  = torch.tensor([0.229, 0.224, 0.225]).view(3,1,1,1)
         clip = (clip - mean) / std
-        return clip, y, tte
+
+        # Build fixation target (optional, one target per clip from first non-zero coord)
+        fix_target = None
+        if self.use_fixation:
+            # Reconstruct key from path: .../rgb_videos/<scene>/<clip>.<ext>
+            rel = os.path.relpath(path, self.rgb_root)
+            scene = os.path.dirname(rel)
+            stem = os.path.splitext(os.path.basename(rel))[0]   # clip id
+            key = f"{scene}/{stem}"
+            coord_path = key_to_coord_path(self.root, self.split, key)
+            frm_idx, x_px, y_px = first_nonzero_coord(coord_path)
+
+            if frm_idx >= 0 and x_px >= 0 and y_px >= 0:
+                # read a THWC frame just to get original size (cheap relative to full training loop)
+                frames_hwcz, _, _ = torchvision.io.read_video(path, pts_unit="sec", output_format="THWC")
+                Horig, Worig = frames_hwcz.shape[1], frames_hwcz.shape[2]
+                # scale (x_px, y_px) from original px -> heatmap coords
+                x_hm = (float(x_px) / max(1.0, float(Worig))) * self.fix_size
+                y_hm = (float(y_px) / max(1.0, float(Horig))) * self.fix_size
+                fix_target = gaussian_heatmap(self.fix_size, self.fix_size, x_hm, y_hm, sigma=self.fix_sigma)
+            else:
+                fix_target = torch.full((1, self.fix_size, self.fix_size), 1.0/(self.fix_size*self.fix_size))
+        
+        if self.use_fixation:
+            return clip, y, tte, fix_target
+        else:
+            return clip, y, tte
+
 
 def make_dada_loader(root_dir: str, split: str, batch: int = 4, frames: int = 16,
-                     size: Tuple[int,int]=(112,112), shuffle=True, max_items: Optional[int]=None):
-    ds = DADAClips(root_dir=root_dir, split=split, frames=frames, size=size, max_items=max_items)
-    return DataLoader(ds, batch_size=batch, shuffle=shuffle, num_workers=2, pin_memory=True, drop_last=False)
+                     size: Tuple[int,int]=(112,112), shuffle=True, max_items: Optional[int]=None,
+                     use_fixation: bool = False, fix_size: int = 14, sigma: float = 2.0, num_workers: int = 2):
+    ds = DADAClips(root_dir=root_dir, split=split, frames=frames, size=size, max_items=max_items,
+                   use_fixation=use_fixation, fix_size=fix_size, sigma=sigma)
+    return DataLoader(ds, batch_size=batch, shuffle=shuffle, num_workers=num_workers, pin_memory=True, drop_last=False)
 
 def list_dada_samples(root_dir: str, split: str, max_items: Optional[int] = None):
     """
