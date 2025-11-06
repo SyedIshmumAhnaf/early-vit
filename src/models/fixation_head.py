@@ -20,8 +20,8 @@ class FixationHead(nn.Module):
         )
 
     def forward(self, x):  # x: (B, D)
-        logits = self.net(x)                                # (B, Hm*Wm)
-        logits = logits.view(x.size(0), 1, self.hm_h, self.hm_w)  # (B,1,Hm,Wm)
-        # For KLDivLoss we supply log-probs
-        log_probs = logits.log_softmax(dim=(2,3))
+        B = x.size(0)
+        logits = self.net(x).view(B, 1, self.hm_h, self.hm_w)  # (B,1,Hm,Wm)
+        # log_softmax must take a single dimension; flatten spatial dims, then reshape back
+        log_probs = F.log_softmax(logits.view(B, -1), dim=-1).view(B, 1, self.hm_h, self.hm_w)
         return log_probs
