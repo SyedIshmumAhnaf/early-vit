@@ -122,7 +122,12 @@ def main():
     ap.add_argument("--k_frac", type=float, default=0.1)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--dump_csv", type=str, default="eval_summary.csv")
+    ap.add_argument("--min_alarm_frame", type=int, default=None)
     args = ap.parse_args()
+
+    effective_min_alarm = args.min_alarm_frame if args.min_alarm_frame is not None else (args.frames - 1)
+    print(f"[eval] min_alarm_frame set to {effective_min_alarm} (frames)")
+
 
     set_seed(args.seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -145,7 +150,16 @@ def main():
         wins = sliding_windows_T(frames_tchw, args.frames)
         probs = batched_forward(model, wins, device, batch_size=args.batch_windows)  # (T,)
 
-        # per-video score (pool over time)
+        # Effective minimum frame where an alarm is allowed
+        min_alarm_frame = args.min_alarm_frame if args.min_alarm_frame is not None else (args.frames - 1)
+
+        # Event index from coordinate file (first non-zero fixation)
+        event_idx = -1
+        if int(label) == 1:
+            coord_path = key_to_coord_path(args.dada_root, args.split, key)
+            event_idx = first_event_frame_from_coord(coord_path)
+
+        # Per-video score (pool over time)
         if args.score_pool == "max":
             vid_score = float(np.max(probs)) if len(probs) else 0.0
         else:
@@ -155,20 +169,17 @@ def main():
         all_labels.append(int(label))
         all_scores.append(vid_score)
 
-        # event index from coordinate file (first non-zero fixation)
-        event_idx = -1
-        if int(label) == 1:
-            coord_path = key_to_coord_path(args.dada_root, args.split, key)
-            event_idx = first_event_frame_from_coord(coord_path)
-
-        # compute first-crossing & absolute mTTA for each threshold
+        # First-crossing + absolute mTTA for each threshold (apply min_alarm_frame gating)
         per_th = {}
         for th in ths:
             idx_cross = np.where(probs >= th)[0]
+            idx_cross = idx_cross[idx_cross >= min_alarm_frame]  # <-- gating applied here
             first_cross = int(idx_cross[0]) if len(idx_cross) else -1
+
             abs_mtta = 0
             if int(label) == 1 and event_idx >= 0 and first_cross >= 0 and first_cross <= event_idx:
                 abs_mtta = int(event_idx - first_cross)
+
             per_th[th] = (first_cross, abs_mtta)
 
         row = {"key": key, "label": int(label), "vid_score": vid_score, "event_idx": event_idx}
@@ -177,6 +188,7 @@ def main():
             row[f"first_cross@{th}"] = fc
             row[f"mtta_frames@{th}"] = mtta
         rows.append(row)
+
 
     # classification summary
     ap_score, auc_score = ap_auc(all_scores, all_labels)
