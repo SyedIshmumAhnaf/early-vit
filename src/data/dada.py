@@ -29,7 +29,7 @@ def _read_split_list(split_txt: str) -> List[Tuple[str,int]]:
        '1/022 1 15 164 137'
     We'll parse 'key label ...' and ignore the rest for v1.
     """
-    items = []
+    items: List[Tuple[str, int]] = []
     with open(split_txt, "r", encoding="utf-8") as f:
         for ln in f:
             ln = ln.strip()
@@ -44,6 +44,7 @@ def _read_split_list(split_txt: str) -> List[Tuple[str,int]]:
             except Exception:
                 # be safe: skip bad lines
                 continue
+            # Keep both positives (1) and negatives (0); do not filter by label.
             items.append((key, label))
     return items
 
@@ -196,7 +197,7 @@ class DADAClips(Dataset):
             c = 1.0 + random.uniform(-0.1, 0.1)
             clip = torch.clamp((clip * c + (b - 1.0)), -3.0, 3.0)
 
-        y = torch.tensor(label, dtype=torch.float32)
+        y = torch.tensor(int(label), dtype=torch.float32)
         tte = torch.tensor(self.frames, dtype=torch.int64)  # provisional; refine later with true accident frame
         mean = torch.tensor([0.485, 0.456, 0.406]).view(3,1,1,1)
         std  = torch.tensor([0.229, 0.224, 0.225]).view(3,1,1,1)
