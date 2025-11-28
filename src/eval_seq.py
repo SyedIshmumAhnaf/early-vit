@@ -107,7 +107,7 @@ def main():
     ap.add_argument("--dada_root", type=str, required=True)
     ap.add_argument("--split", type=str, default="validation",
                     choices=["training","validation","testing"])
-    ap.add_argument("--max_items", type=int, default=64)
+    ap.add_argument("--max_items", type=int, default=None)
 
     ap.add_argument("--backbone", type=str, default="mvitv2_s",
                     choices=["tiny3d","mvitv2_s"])
@@ -132,8 +132,8 @@ def main():
     set_seed(args.seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    samples = list_dada_samples_with_keys(args.dada_root, args.split,
-                                          max_items=args.max_items)
+    max_items = args.max_items if args.max_items not in [None, -1] else None
+    samples = list_dada_samples_with_keys(args.dada_root, args.split, max_items=max_items)
     print(f"Found {len(samples)} videos for split={args.split}")
 
     D = 256
