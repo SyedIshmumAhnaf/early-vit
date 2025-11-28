@@ -23,6 +23,27 @@ def _resolve_video_path(root_rgb: str, key: str) -> Optional[str]:
                 return os.path.join(folder, fn)
     return None
 
+def _resolve_video_for_split(root_dir: str, key: str, split: str) -> Optional[str]:
+    """
+    Resolve a video path for a given key and split.
+
+    For training/testing: only look in that split's rgb_videos.
+    For validation: look in validation/rgb_videos first, then testing, then training,
+    so that negatives taken from other splits can still be found.
+    """
+    if split == "validation":
+        search_splits = ["validation", "testing", "training"]
+    else:
+        search_splits = [split]
+
+    for sp in search_splits:
+        rgb_root = os.path.join(root_dir, sp, "rgb_videos")
+        p = _resolve_video_path(rgb_root, key)
+        if p is not None:
+            return p
+    return None
+
+
 def _read_split_list(split_txt: str) -> List[Tuple[str,int]]:
     """
     Each line example (from your snippet):
@@ -125,7 +146,8 @@ class DADAClips(Dataset):
         # Resolve paths and keep those that exist
         self.samples = []
         for key, label in items:
-            p = _resolve_video_path(self.rgb_root, key)
+            #p = _resolve_video_path(self.rgb_root, key)
+            p = _resolve_video_for_split(self.root, key, split)
             if p is not None:
                 self.samples.append((p, label))
         if max_items is not None:
@@ -239,15 +261,11 @@ def make_dada_loader(root_dir: str, split: str, batch: int = 4, frames: int = 16
     return DataLoader(ds, batch_size=batch, shuffle=shuffle, num_workers=num_workers, pin_memory=True, drop_last=False)
 
 def list_dada_samples(root_dir: str, split: str, max_items: Optional[int] = None):
-    """
-    Returns list of (video_path, label) for the split, resolved via rgb_videos.
-    """
-    rgb_root = os.path.join(root_dir, split, "rgb_videos")
     split_txt = os.path.join(root_dir, split, f"{split}.txt")
     items = _read_split_list(split_txt)
     samples = []
     for key, label in items:
-        p = _resolve_video_path(rgb_root, key)
+        p = _resolve_video_for_split(root_dir, key, split)
         if p is not None:
             samples.append((p, label))
     if max_items is not None and max_items > 0:
@@ -281,17 +299,14 @@ def first_event_frame_from_coord(coord_path: str) -> int:
     return -1
 
 def list_dada_samples_with_keys(root_dir: str, split: str, max_items: int | None = None):
-    """
-    Returns list of (key, video_path, label).
-    """
-    rgb_root = os.path.join(root_dir, split, "rgb_videos")
     split_txt = os.path.join(root_dir, split, f"{split}.txt")
     items = _read_split_list(split_txt)
     samples = []
     for key, label in items:
-        p = _resolve_video_path(rgb_root, key)
+        p = _resolve_video_for_split(root_dir, key, split)
         if p is not None:
             samples.append((key, p, label))
     if max_items:
         samples = samples[:max_items]
     return samples
+
